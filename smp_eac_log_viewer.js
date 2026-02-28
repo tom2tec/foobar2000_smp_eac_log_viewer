@@ -1,12 +1,12 @@
 // ==================================================
-// EAC Log Viewer - DUI Theme
-// Version: 1.1.0
-// Author/Attribution: audio-file.org & ChatGPT
+// EAC + DR Log Viewer - DUI Theme
+// Version: 1.2.4
+// Author: tom2tec (using ChatGPT)
+// Copyright: © 2026 audio-file.org
 // License: MIT
+// Platform: Windows only
 // ==================================================
 // MIT License
-//
-// Copyright (c) 2026 audio-file.org & ChatGPT
 //
 // Permission is hereby granted, free of charge, to any person obtaining a copy
 // of this software and associated documentation files (the "Software"), to deal
@@ -54,34 +54,53 @@ function sanitize(name) {
     return name.replace(/[<>:"\/\\|?*]/g, "_");
 }
 
-function getFolder(metadb) {
+// ------------------------------
+// Robust log file resolution (EAC + DR + artist/album variations)
+// ------------------------------
+function getLogFiles(metadb) {
+    if (!metadb) return [];
+
+    const fso = new ActiveXObject("Scripting.FileSystemObject");
+
+    // Get folder and normalize UNC/NAS paths
     let tf = fb.TitleFormat("%path%");
-    let full = tf.EvalWithMetadb(metadb);
-    return full.replace(/[^\\]+$/, "");
-}
+    let full = tf.EvalWithMetadb(metadb).replace(/^"|"$/g, ""); // strip quotes
+    let lastSep = full.lastIndexOf("\\");
+    if (lastSep < 0) return [];
+    let folder = full.substring(0, lastSep);
+    if (folder.endsWith("\\")) folder = folder.slice(0, -1);
 
-// ------------------------------
-// Log resolution
-// ------------------------------
-function resolveLogPath(metadb) {
-    if (!metadb) return null;
+    if (!fso.FolderExists(folder)) return [];
 
-    let folder = getFolder(metadb);
+    // Candidate logs in priority order
+    let candidates = [];
 
+    // Album-specific
     let tfAlbum = fb.TitleFormat("$if2(%album%,Unknown Album)");
     let album = sanitize(tfAlbum.EvalWithMetadb(metadb));
-    let albumLog = folder + album + ".log";
-    if (utils.FileTest(albumLog, "e")) return albumLog;
+    candidates.push(album + ".log");
 
-    let tfFallback = fb.TitleFormat("$if2(%artist%,Unknown Artist) - $if2(%album%,Unknown Album)");
-    let fallback = sanitize(tfFallback.EvalWithMetadb(metadb));
-    let fallbackLog = folder + fallback + ".log";
-    if (utils.FileTest(fallbackLog, "e")) return fallbackLog;
+    // Artist - Album
+    let tfArtistAlbum = fb.TitleFormat("$if2(%artist%,Unknown Artist) - $if2(%album%,Unknown Album)");
+    let artistAlbum = sanitize(tfArtistAlbum.EvalWithMetadb(metadb));
+    candidates.push(artistAlbum + ".log");
 
-    let eacLog = folder + "EAC.log";
-    if (utils.FileTest(eacLog, "e")) return eacLog;
+    // Generic logs
+    candidates.push("EAC.log", "eac.log", "DR.log", "dr.log", "Album_DR.txt", "foo_dr.txt", "album_dr.txt");
 
-    return null;
+    let found = [];
+
+    for (let i = 0; i < candidates.length; i++) {
+        let filePath = folder + "\\" + candidates[i];
+        if (fso.FileExists(filePath)) {
+            found.push(filePath);
+        } else {
+            // fallback for NAS quirks
+            try { utils.ReadTextFile(filePath); found.push(filePath); } catch (e) {}
+        }
+    }
+
+    return found;
 }
 
 // ------------------------------
@@ -98,51 +117,83 @@ function loadLog(metadb) {
         return;
     }
 
-    let logPath = resolveLogPath(metadb);
+    let logPaths = getLogFiles(metadb);
 
-    if (!logPath) {
+    if (logPaths.length === 0) {
         g_lines = [
-            "EAC log not found.",
+            "EAC/DR log not found.",
             "",
             "Tried:",
             "%album%.log",
             "%artist% - %album%.log",
-            "EAC.log"
+            "EAC.log",
+            "DR.log",
+            "Album_DR.txt",
+            "foo_dr.txt"
         ];
         g_lineColors = Array(g_lines.length).fill(DUI_TEXT);
         return;
     }
 
-    try {
-        let raw = utils.ReadTextFile(logPath).replace(/\r/g, "");
-        g_lines = raw.split("\n");
-        g_lineColors = Array(g_lines.length).fill(DUI_TEXT);
+    g_lines = [];
+    g_lineColors = [];
 
-        // extract summary line
-        let summaryLine = "";
-        let summaryColor = DUI_TEXT;
-        for (let i = g_lines.length - 1; i >= 0; i--) {
-            let line = g_lines[i];
-            if (line.includes("No errors occurred") || line.includes("Copy OK")) {
-                summaryLine = "✔ SUCCESS: " + line;
-                summaryColor = DUI_SUCCESS;
-                break;
-            } else if (line.includes("There were errors")) {
-                summaryLine = "✖ ERROR: " + line;
-                summaryColor = DUI_ERROR;
-                break;
+    for (let j = 0; j < logPaths.length; j++) {
+        let logPath = logPaths[j];
+        try {
+            let raw = utils.ReadTextFile(logPath).replace(/\r/g, "");
+            let lines = raw.split("\n");
+            let colors = Array(lines.length).fill(DUI_TEXT);
+
+            // Highlight summary/relevant lines
+            for (let i = 0; i < lines.length; i++) {
+                let line = lines[i];
+                if (line.includes("No errors occurred") || line.includes("Copy OK") || line.match(/Official DR/i)) {
+                    colors[i] = DUI_SUCCESS; // green
+                } else if (line.includes("There were errors")) {
+                    colors[i] = DUI_ERROR;   // red
+                }
             }
-        }
 
-        // prepend summary line so it scrolls
-        if (summaryLine) {
-            g_lines.unshift(summaryLine);
-            g_lineColors.unshift(summaryColor);
-        }
+            // Determine summary for header
+            let summaryLine = "";
+            let summaryColor = DUI_HIGHLIGHT; // default
+            for (let i = lines.length - 1; i >= 0; i--) {
+                let line = lines[i];
+                if (line.includes("No errors occurred") || line.includes("Copy OK")) {
+                    summaryLine = "✔ No errors occurred";
+                    summaryColor = DUI_SUCCESS;
+                    break;
+                } else if (line.includes("There were errors")) {
+                    summaryLine = "✖ There were errors";
+                    summaryColor = DUI_ERROR;
+                    break;
+                }
+            }
 
-    } catch (e) {
-        g_lines = ["Error reading log:", "", e.toString()];
-        g_lineColors = [DUI_ERROR, DUI_TEXT, DUI_ERROR];
+            // Add header for each log
+            g_lines.push("==== " + logPath.split("\\").pop() + " ====");
+            g_lineColors.push(summaryColor);
+
+            // Add summary line immediately after header
+            if (summaryLine) {
+                g_lines.push(summaryLine);
+                g_lineColors.push(summaryColor);
+            }
+
+            g_lines = g_lines.concat(lines);
+            g_lineColors = g_lineColors.concat(colors);
+
+            // spacing between logs
+            g_lines.push("");
+            g_lineColors.push(DUI_TEXT);
+
+        } catch (e) {
+            g_lines.push("Error reading log: " + logPath);
+            g_lines.push(e.toString());
+            g_lineColors.push(DUI_ERROR);
+            g_lineColors.push(DUI_ERROR);
+        }
     }
 }
 
@@ -158,7 +209,11 @@ function on_paint(gr) {
         let line = g_lines[i];
         let color = g_lineColors[i];
 
-        if (line.startsWith("Exact Audio Copy") || line.startsWith("Track")) color = DUI_HIGHLIGHT;
+        if (line.includes("No errors occurred") || line.includes("Copy OK") || line.match(/Official DR/i)) {
+            color = DUI_SUCCESS;
+        } else if (line.includes("There were errors")) {
+            color = DUI_ERROR;
+        }
 
         if (y - g_scroll > -g_lineHeight && y - g_scroll < window.Height) {
             gr.DrawString(line, g_font, color, g_margin, y - g_scroll, window.Width - g_margin * 2, g_lineHeight, 0);
