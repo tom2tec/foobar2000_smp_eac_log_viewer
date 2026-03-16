@@ -1,8 +1,9 @@
 // ==================================================
 // EAC + DR Log Viewer - DUI Theme
-// Version: 1.2.4
+// Version: 1.2.5
 // Author: tom2tec (using ChatGPT)
 // Copyright: © 2026 audio-file.org
+// Change: Removed redundant color checks in on_paint for headers/summary lines
 // License: MIT
 // Platform: Windows only
 // ==================================================
@@ -181,6 +182,7 @@ function loadLog(metadb) {
                 g_lineColors.push(summaryColor);
             }
 
+            // Add all log lines with precomputed colors
             g_lines = g_lines.concat(lines);
             g_lineColors = g_lineColors.concat(colors);
 
@@ -207,13 +209,7 @@ function on_paint(gr) {
 
     for (let i = 0; i < g_lines.length; i++) {
         let line = g_lines[i];
-        let color = g_lineColors[i];
-
-        if (line.includes("No errors occurred") || line.includes("Copy OK") || line.match(/Official DR/i)) {
-            color = DUI_SUCCESS;
-        } else if (line.includes("There were errors")) {
-            color = DUI_ERROR;
-        }
+        let color = g_lineColors[i]; // use precomputed color only
 
         if (y - g_scroll > -g_lineHeight && y - g_scroll < window.Height) {
             gr.DrawString(line, g_font, color, g_margin, y - g_scroll, window.Width - g_margin * 2, g_lineHeight, 0);
